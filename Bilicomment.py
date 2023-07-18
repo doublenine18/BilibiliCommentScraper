@@ -218,15 +218,15 @@ def scroll_to_bottom(driver):
         scroll_count += 1
         print(f'下滑滚动第{scroll_count}次 / 最大滚动{MAX_SCROLL_COUNT}次')
 
-def write_to_csv(video_id, index, level, parent_nickname, parent_user_id, nickname, user_id, content, time, likes):
-    file_exists = os.path.isfile(f'{video_id}.csv')
+def write_to_csv(video_title, video_id, index, level, parent_nickname, parent_user_id, nickname, user_id, content, time, likes):
+    file_exists = os.path.isfile(f'./output/{video_id}.csv')
     max_retries = 50
     retries = 0
 
     while retries < max_retries:
         try:
             with open(f'{video_id}.csv', mode='a', encoding='utf-8', newline='') as csvfile:
-                fieldnames = ['编号', '隶属关系', '被评论者昵称', '被评论者ID', '昵称', '用户ID', '评论内容', '发布时间',
+                fieldnames = ['视频标题','视频ID','编号', '隶属关系', '被评论者昵称', '被评论者ID', '昵称', '用户ID', '评论内容', '发布时间',
                               '点赞数']
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
@@ -234,6 +234,8 @@ def write_to_csv(video_id, index, level, parent_nickname, parent_user_id, nickna
                     writer.writeheader()
 
                 writer.writerow({
+                    '视频标题':video_title,
+                    '视频ID': video_id,
                     '编号': index,
                     '隶属关系': level,
                     '被评论者昵称': parent_nickname,
@@ -254,7 +256,14 @@ def write_to_csv(video_id, index, level, parent_nickname, parent_user_id, nickna
         print("将爬取到的数据写入csv时遇到权限错误，且已达到最大重试次数50次，退出程序")
         sys.exit(1)
 
-def extract_sub_reply(video_id, progress, first_level_nickname, first_level_user_id, driver):
+def extract_emojis_text(reply_content):
+    text = reply_content.text
+    emojis = reply_content.find_all("img", class_="emoji-small")
+    for emoji in emojis:
+        text = text + " " + str(emoji.get("alt")) + " "
+    return text
+
+def extract_sub_reply(video_title,video_id, progress, first_level_nickname, first_level_user_id, driver):
 
     i = progress["first_comment_index"]
 
@@ -272,14 +281,18 @@ def extract_sub_reply(video_id, progress, first_level_nickname, first_level_user
             try:
                 sub_reply_nickname = sub_reply_item.find("div", class_="sub-user-name").text
                 sub_reply_user_id = sub_reply_item.find("div", class_="sub-reply-avatar")["data-user-id"]
-                sub_reply_text = sub_reply_item.find("span", class_="reply-content").text
+                sub_reply_element = sub_reply_item.find("span", class_="reply-content")
+                try:
+                    sub_reply_text = extract_emojis_text(sub_reply_element)
+                except:
+                    sub_reply_text = sub_reply_element.text                
                 sub_reply_time = sub_reply_item.find("span", class_="sub-reply-time").text
                 try:
                     sub_reply_likes = sub_reply_item.find("span", class_="sub-reply-like").find("span").text
                 except AttributeError:
                     sub_reply_likes = 0
 
-                write_to_csv(video_id, index=i, level='二级评论', parent_nickname=first_level_nickname,
+                write_to_csv(video_title,video_id, index=i, level='二级评论', parent_nickname=first_level_nickname,
                              parent_user_id=first_level_user_id,
                              nickname=sub_reply_nickname, user_id=sub_reply_user_id, content=sub_reply_text, time=sub_reply_time,
                              likes=sub_reply_likes)
@@ -371,6 +384,12 @@ def main():
 
             soup = BeautifulSoup(driver.page_source, "html.parser")
             all_reply_items = soup.find_all("div", class_="reply-item")
+            video_titles = soup.find_all("h1", class_="video-title")
+            if video_titles:
+                video_title = video_titles[0].text
+            else:
+                # Handle the case when no video titles are found
+                video_title = None  # or any default value you prefer
 
             for i, reply_item in enumerate(all_reply_items):
 
@@ -385,8 +404,11 @@ def main():
                     "data-user-id"] if first_level_user_id_element is not None else ''
 
                 first_level_content_element = reply_item.find("span", class_="reply-content")
-                first_level_content = first_level_content_element.text if first_level_content_element is not None else ''
-
+                try:
+                    first_level_content = extract_emojis_text(first_level_content_element)
+                except:
+                    first_level_content = ''
+            
                 first_level_time_element = reply_item.find("span", class_="reply-time")
                 first_level_time = first_level_time_element.text if first_level_time_element is not None else ''
 
@@ -396,7 +418,7 @@ def main():
                     first_level_likes = 0
 
                 if (progress["write_parent"] == 0):
-                    write_to_csv(video_id, index=i, level='一级评论', parent_nickname='up主', parent_user_id='up主',
+                    write_to_csv(video_title,video_id, index=i, level='一级评论', parent_nickname='up主', parent_user_id='up主',
                                  nickname=first_level_nickname, user_id=first_level_user_id, content=first_level_content,
                                  time=first_level_time, likes=first_level_likes)
                     progress["write_parent"] = 1
@@ -417,7 +439,7 @@ def main():
                         print("查看全部 button is not clickable, skipping...")
 
                 if reply_item.find("div", class_="sub-reply-list"):
-                    extract_sub_reply(video_id, progress, first_level_nickname, first_level_user_id, driver)
+                    extract_sub_reply(video_title,video_id, progress, first_level_nickname, first_level_user_id, driver)
 
                 if clicked_view_more:
                     # 可以把max_sub_pages更改为您希望设置的最大二级评论页码数。
@@ -437,7 +459,7 @@ def main():
                                 try:
                                     click_next_page(driver, button, i, progress)
                                     time.sleep(2)
-                                    extract_sub_reply(video_id, progress, first_level_nickname, first_level_user_id,
+                                    extract_sub_reply(video_title,video_id, progress, first_level_nickname, first_level_user_id,
                                                       driver)
                                     print(f'发现多页二级评论，正在翻页：二级评论已爬取到第{progress["sub_page"]}页')
                                     found_next_button = True
